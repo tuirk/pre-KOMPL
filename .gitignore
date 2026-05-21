@@ -23,6 +23,10 @@ Thumbs.db
 *.swp
 *.swo
 
-# Env files
+# Env files — never commit secrets
 .env
-.env.local
+.env.*
+!.env.example
+
+# Local agent handover — machine-specific
+CURSOR.md

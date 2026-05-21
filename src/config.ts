@@ -1,7 +1,20 @@
 // Config: env vars + paths. No hardcoded secrets.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { loadEnvFile } from "node:process";
+
+// Load project-root `.env` when present (Node 22+ built-in; no dotenv dep).
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const dotenvPath = join(projectRoot, ".env");
+if (existsSync(dotenvPath)) {
+  try {
+    loadEnvFile(dotenvPath);
+  } catch {
+    // Malformed .env — fall through to process.env only.
+  }
+}
 
 export interface Config {
   dbPath: string;
