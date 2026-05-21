@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Personal data — never commit
+run-input/
+audit-out/
+*.db
+*.db-shm
+*.db-wal
+
+# Spec & test fixtures — kept local for now, not yet in repo
+pre-kompl-spec/
+test-fixtures/
+
+# Local-only tooling
+scripts/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env files
+.env
+.env.local
