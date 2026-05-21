@@ -36,7 +36,8 @@ npx tsc --noEmit
 # Run the CLI directly
 npx tsx --no-warnings src/cli.ts <subcommand>
 
-# Subcommands: ingest, status, errors, partials, reclassify, search, rebuild-fts
+# Subcommands: ingest, status, errors, partials, reclassify, search, rebuild-fts, sql
+# search flags: --source, --kind, --folder, --creator, --topic, --status, --partial, --limit, --json
 # See README.md "Run" and "Search" sections for examples.
 ```
 
@@ -80,7 +81,7 @@ src/
 - **TypeScript strict mode.** `tsconfig.json` has `"strict": true`. Don't relax it.
 - **ESM only.** `"type": "module"`. Use `.js` extensions in imports (`./db.js` even though the file is `db.ts`).
 - **SQLite access** goes through `better-sqlite3` (synchronous API). Don't introduce another driver. Don't add an async query layer.
-- **FTS5 maintenance** is manual via `upsertInstanceFts` / `removeInstanceFts` in `db.ts`. Every code path that INSERTs or UPDATEs an Instance row, or that writes an Item whose `bookmark_folder_path` is new, must call `upsertInstanceFts(db, instance_id)` after the write. Triggers were considered and rejected — explicit calls are auditable.
+- **FTS5 maintenance** is manual via `upsertInstanceFts` / `removeInstanceFts` in `db.ts`. Every code path that INSERTs or UPDATEs an Instance row, or that writes an Item whose `bookmark_folder_path` is new, must call `upsertInstanceFts(db, instance_id)` after the write. Triggers were considered and rejected — explicit calls are auditable. GitHub `topics[]` from `source_payload_json` are indexed in the FTS `topics` column (see [docs/decisions/subject-authorities-deferred.md](./docs/decisions/subject-authorities-deferred.md)).
 - **Idempotent schema.** `CREATE TABLE IF NOT EXISTS` everywhere. Schema migrations live inline in `openDb`; bump `CANONICALIZATION_RULES_VERSION` only when canonicalization rules themselves change, not for arbitrary schema edits.
 - **Dedup composites differ by source** — see the table in [README.md](./README.md#what-the-four-pipelines-do). Don't unify them.
 - **Status semantics** are load-bearing: `ok` = fully fetched + parsed; `partial` = stored but degraded (always with a `partial_reason`); `error` = ingest itself failed (recoverable, surfaced in `ingestion_errors`). Functions that filter results should default to `ok`-only and require explicit broadening.

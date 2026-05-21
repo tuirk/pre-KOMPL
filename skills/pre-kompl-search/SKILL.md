@@ -22,9 +22,12 @@ Almost every catalog question goes through one CLI command:
 
 ```
 pre-kompl search "<query>" [--source <list>] [--kind <list>] [--folder <prefix>]
+                           [--creator <list>] [--topic <list>]
                            [--status <list> | --status all] [--partial <list>]
                            [--limit <n>] [--json]
 ```
+
+Filter flags accept comma-separated values. `--creator` prefix-matches authority preferred names (case-insensitive). `--topic` prefix-matches GitHub topic tags from `source_payload_json.topics[]` (GitHub repos only).
 
 Defaults:
 - `--status ok` — partial/error rows excluded. Use `--status all` to include them, or `--partial dead_link` to surface specifically that class.
@@ -33,7 +36,7 @@ Defaults:
 
 The search uses SQLite FTS5 with BM25 ranking, prefix-matching (`memory` matches `memories`, `memgpt`, `agentmemory`), and porter stemming for English. Stopwords (`for`, `with`, `the`, etc.) are dropped automatically — so "tools for agents" is treated as "tools agents".
 
-Zero results trigger automatic relaxation (drop the rightmost token and retry). If still zero, the search returns honestly empty rather than throwing.
+Zero results trigger automatic relaxation: drop the rightmost token and retry (`relaxed_mode: "drop_token"`). If still zero and the original query had 2+ tokens, retry once with OR across all tokens (`relaxed_mode: "or"`). Single-token queries are not OR-relaxed — they are already broad. If all relaxation fails, the search returns honestly empty rather than throwing.
 
 ## When to use `--json` vs pretty output
 
@@ -46,6 +49,7 @@ For yourself (programmatic reasoning before answering the user): always use `--j
   "query_raw": "what user asked",
   "query_executed": "the* sanitized* fts5* expression*",
   "relaxed": false,
+  "relaxed_mode": "none",
   "items": [
     {
       "instance_id": "inst_gh_owner__repo",
@@ -58,6 +62,7 @@ For yourself (programmatic reasoning before answering the user): always use `--j
       "partial_reason": null,
       "creator_name": "preferred name + variants",
       "folder_paths": ["Bookmarks|...|..."],
+      "topics": ["ai-memory", "agents"],
       "bm25_rank": -3.42
     }
   ],
@@ -66,20 +71,25 @@ For yourself (programmatic reasoning before answering the user): always use `--j
     "source": {"github": 19, "web": 20},
     "kind": {"github-repo": 19, "article": 12, "docs": 8},
     "folder": [{"path": "...", "count": 16}, ...],
-    "creator": [{"name": "...", "count": 4}, ...]
+    "creator": [{"name": "...", "count": 4}, ...],
+    "topic": [{"name": "ai-memory", "count": 3}, ...]
   }
 }
 ```
+
+`relaxed_mode` is `"none"`, `"drop_token"`, or `"or"`. `topics[]` is populated for GitHub repos (from indexed topic tags); empty for other sources.
 
 `facets` is the heart of the discovery-layer pattern. They tell you what refinements the user could make. Use them in your answer: "you have 39 results, 19 GitHub repos and 20 web articles, mostly in your Trading Agents folder (16) — want me to narrow?"
 
 ## The schema (for when you need raw SQL)
 
-If `pre-kompl search` doesn't fit (date ranges, exact URL lookup, custom aggregations, dead-link cleanup), drop to SQL:
+If `pre-kompl search` doesn't fit (date ranges, exact URL lookup, custom aggregations, dead-link cleanup), drop to the read-only `sql` subcommand:
 
 ```bash
-sqlite3 "${PRE_KOMPL_DB:-$HOME/.pre-kompl/catalog.db}" -header -separator '|' "<query>"
+npx tsx --no-warnings src/cli.ts sql "SELECT ..." [--json] [--limit <n>]
 ```
+
+Works on Windows without the `sqlite3` CLI installed. Uses the same `PRE_KOMPL_DB` / `.env` as other commands. Only `SELECT` / `WITH` queries are allowed. Default output is pipe-separated with a header row; `--json` returns an array of row objects.
 
 Tables that matter:
 
@@ -93,6 +103,7 @@ Tables that matter:
 - `ingest_status` — 'ok' | 'partial' | 'error'
 - `partial_reason` — when partial: 'dead_link', 'paywalled', 'blocked', 'brand_default_title', 'failed', 'not_html'
 - `fetched_at` — unix epoch ms
+- GitHub repo `topics[]` — stored in `source_payload_json` at ingest and copied into the FTS `topics` column (searchable via `pre-kompl search`). Not mapped to `subject_authority_ids` yet — see repo `docs/decisions/subject-authorities-deferred.md`.
 
 `items` — one row per bookmark (multiple Items can point at the same Instance)
 - `instance_id` FK → instances.id
@@ -125,15 +136,38 @@ But don't assume; check first by running the bare search and reading `facets.fol
 - **Folder match is keyword-shaped.** If user types "neuroscience" and their folders are all named "Coding" / "Trading" / "Health", folder facet won't help. Keyword search across titles/descriptions still works.
 - **Partial rows are excluded by default.** Use `--status all` to include them, or `--partial dead_link` to surface cleanup candidates.
 
+## Agent query playbook
+
+Follow this multi-pass flow before answering catalog questions:
+
+1. **Always start** with `pre-kompl search "<phrase>" --json`. Identify KIS vs subject search from the user's phrasing.
+2. **If `count === 0`:** shorten the query → try anchor synonyms (e.g. "memgpt" → "memory") → try single-token searches → read `facets.folder` from a broad `--limit 5` probe if needed.
+3. **If subject + inventory question** ("how many X do I have"): dedupe by `instance_id` in your head — multiple Items can point at the same Instance; don't count duplicate rows as separate resources.
+4. **Status scope:** default `--status ok` for "useful stuff"; `--status all` for audit/debug or dead-link cleanup.
+5. **When to refine:** read `facets` and offer `--source`, `--folder`, `--creator`, or `--topic` narrowings when the result set is large or ambiguous.
+6. **Response template:** state count + source/kind split + dominant folder + top 3–5 hits + one refinement offer.
+
+Examples of facet-driven refinement:
+
+```
+pre-kompl search "memory" --creator vectorize --json
+pre-kompl search "" --topic ai-memory --source github --json
+```
+
 ## Patterns
 
 **Subject search**: just call `pre-kompl search "<topic>" --json`, summarize the count + top hits + dominant facets, offer narrowings.
 
 **Known-item search**: same, but treat the top result as the answer when BM25 rank is high and the query was specific.
 
-**Creator browse** ("what else by X"):
+**Creator browse** ("what else by X") — prefer search filters when possible:
 ```bash
-sqlite3 "${PRE_KOMPL_DB:-$HOME/.pre-kompl/catalog.db}" -header -separator '|' \
+pre-kompl search "" --creator Karpathy --json
+```
+
+For joins search can't express:
+```bash
+npx tsx --no-warnings src/cli.ts sql \
   "SELECT i.title, i.url_canonical, i.source FROM instances i
    JOIN authorities a ON i.creator_authority_id = a.id
    WHERE a.preferred LIKE '%Karpathy%' AND i.ingest_status='ok'"
@@ -141,7 +175,7 @@ sqlite3 "${PRE_KOMPL_DB:-$HOME/.pre-kompl/catalog.db}" -header -separator '|' \
 
 **Recent saves**:
 ```bash
-sqlite3 "${PRE_KOMPL_DB:-$HOME/.pre-kompl/catalog.db}" -header -separator '|' \
+npx tsx --no-warnings src/cli.ts sql \
   "SELECT i.title, i.source, datetime(it.save_date,'unixepoch') AS saved
    FROM items it JOIN instances i ON it.instance_id = i.id
    WHERE i.ingest_status = 'ok'
@@ -150,7 +184,7 @@ sqlite3 "${PRE_KOMPL_DB:-$HOME/.pre-kompl/catalog.db}" -header -separator '|' \
 
 **Folder tree** (when no match, show user what they have):
 ```bash
-sqlite3 "${PRE_KOMPL_DB:-$HOME/.pre-kompl/catalog.db}" -header -separator '|' \
+npx tsx --no-warnings src/cli.ts sql \
   "SELECT bookmark_folder_path, COUNT(*) c FROM items
    WHERE bookmark_folder_path != ''
    GROUP BY bookmark_folder_path ORDER BY c DESC"

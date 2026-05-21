@@ -60,6 +60,8 @@ npx tsx --no-warnings src/cli.ts search "agent memory"
 # Narrow by facet
 npx tsx --no-warnings src/cli.ts search "rag" --source github
 npx tsx --no-warnings src/cli.ts search "" --folder "Bookmarks|Cyber DYOR|A.I."
+npx tsx --no-warnings src/cli.ts search "memory" --creator vectorize
+npx tsx --no-warnings src/cli.ts search "" --topic ai-memory --source github
 npx tsx --no-warnings src/cli.ts search "trading" --kind video --limit 50
 
 # Dead-link cleanup (default --status ok hides partials; broaden to see them)
@@ -69,9 +71,17 @@ npx tsx --no-warnings src/cli.ts search "" --partial dead_link --status all
 npx tsx --no-warnings src/cli.ts search "agents" --json
 ```
 
-Flags: `--source`, `--kind`, `--folder`, `--status` (default `ok`), `--partial`, `--limit` (default 20, cap 100), `--json`.
+Flags: `--source`, `--kind`, `--folder`, `--creator`, `--topic`, `--status` (default `ok`), `--partial`, `--limit` (default 20, cap 100), `--json`.
 
-Zero-result queries auto-relax by dropping the rightmost token and retrying once. Empty query is allowed only when at least one filter is set — otherwise it would dump the whole catalog.
+Zero-result queries auto-relax by dropping the rightmost token and retrying; if still zero with 2+ tokens, retry once with OR across tokens. Empty query is allowed only when at least one filter is set — otherwise it would dump the whole catalog.
+
+### SQL escape hatch
+
+```bash
+# Read-only SELECT (pipe-separated output; works on Windows without sqlite3 CLI)
+npx tsx --no-warnings src/cli.ts sql "SELECT bookmark_folder_path, COUNT(*) c FROM items GROUP BY 1 ORDER BY c DESC LIMIT 5"
+npx tsx --no-warnings src/cli.ts sql "SELECT title, source FROM instances WHERE ingest_status='ok' LIMIT 10" --json
+```
 
 ### When to re-ingest vs. reclassify
 
