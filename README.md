@@ -4,6 +4,8 @@ Lightweight catalog for thousands of saved bookmarks. Sits beneath Kompl.
 
 v0.1 MVP — CLI ingest of a folder of bookmark exports / notes files into a local SQLite catalog.
 
+Ships with an [agent skill](#agent-skill) at [`skills/pre-kompl-search/`](./skills/pre-kompl-search/) so you can ask an LLM agent things like *"what do I have on agent memory?"* or *"find my saved trading repos"* and have it query the catalog correctly.
+
 ## Install
 
 Needs Node 22+. Uses `better-sqlite3` (native, FTS5 enabled). Prebuilt binaries ship for Windows/macOS/Linux on common Node versions — no C compiler required for the supported platforms.
@@ -84,6 +86,20 @@ Ingest dedups on `(source, native_id)` — re-running ingest on the same bookmar
 The changelog you receive with each pre-kompl update will tell you which one.
 
 `reclassify` is idempotent: running it against an already-current DB prints `Nothing to reclassify — every existing row already matches current rules.`
+
+## Agent skill
+
+[`skills/pre-kompl-search/SKILL.md`](./skills/pre-kompl-search/SKILL.md) is a model-agnostic skill file that teaches an LLM agent how to query your catalog correctly. The format follows the emerging agent-skills convention (YAML frontmatter with `name` + `description` so a host can decide when to load it, prose body for the model to read). Drop the `skills/` directory into whatever agent harness you use — anything that auto-discovers a `skills/` folder will pick it up; anything that doesn't, you can load the file manually.
+
+What the skill knows:
+
+- **The two access patterns.** Known-item search (*"that Karpathy GPT video"*) vs. subject search (*"what do I have on agent memory"*). Different phrasings, different ways to read the result set, both routed through the same `search` command.
+- **When to use `--json` vs. pretty output.** Pretty for the human; `--json` envelope when the agent needs the facet counts to reason about refinements before answering.
+- **The envelope shape.** `items[]`, `count`, `relaxed`, and `facets` with per-source / per-kind / per-folder / per-creator counts so the agent can suggest narrowings instead of dumping 100 hits.
+- **The schema for the raw-SQL escape hatch.** When `search` doesn't fit — date ranges, exact URL lookups, dead-link cleanup, cross-creator joins — the skill lists the `instances`, `items`, `authorities` columns the agent needs and gives ready-to-use SQL recipes for creator browse, recent saves, folder tree, and dead-link audit.
+- **Honest limits.** Catalog metadata is triage-grade (one-line GitHub descriptions, one-sentence og:descriptions). The skill tells the agent to say so plainly when asked comparative questions ("which is best for X") rather than fabricating answers from short descriptions.
+
+You can also read `SKILL.md` as a human usage guide for the `search` command — it's written as prose, not as a magic incantation.
 
 ## What the four pipelines do
 
