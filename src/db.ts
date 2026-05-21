@@ -130,6 +130,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS instances_fts USING fts5(
   folder_paths,
   creator_name,
   url_canonical,
+  topics,
   source UNINDEXED,
   kind UNINDEXED,
   ingest_status UNINDEXED,
@@ -138,8 +139,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS instances_fts USING fts5(
 );
 `;
 
-export function openDb(path: string): DB {
-  const db = new Database(path);
+// Bump when instances_fts column set changes. openDb() drops/recreates + rebuilds on mismatch.
+export const FTS_SCHEMA_VERSION = 2;
+
+const INSTANCES_FTS_CREATE_SQL = `
+CREATE VIRTUAL TABLE instances_fts USING fts5(
+  instance_id UNINDEXED,
+  title,
+  description,
+  folder_paths,
+  creator_name,
+  url_canonical,
+  topics,
+  source UNINDEXED,
+  kind UNINDEXED,
+  ingest_status UNINDEXED,
+  partial_reason UNINDEXED,
+  tokenize = 'porter unicode61'
+);
+`;
+
+export function openDb(path: string, opts?: { readonly?: boolean }): DB {
+  const db = new Database(path, opts?.readonly ? { readonly: true } : undefined);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA_SQL);
@@ -158,7 +179,42 @@ export function openDb(path: string): DB {
         `A migration is required (see /pre-kompl-spec/architecture/access-points.md#canonicalization-rules-are-versioned).`
     );
   }
+
+  migrateInstancesFtsIfNeeded(db);
   return db;
+}
+
+// FTS5 virtual tables can't ALTER — drop/recreate when the indexed column set changes.
+function migrateInstancesFtsIfNeeded(db: DB): void {
+  const row = db
+    .prepare("SELECT value FROM meta WHERE key = 'fts_schema_version'")
+    .get() as { value: string } | undefined;
+  if (row && Number(row.value) === FTS_SCHEMA_VERSION) return;
+
+  db.exec("DROP TABLE IF EXISTS instances_fts");
+  db.exec(INSTANCES_FTS_CREATE_SQL);
+  db.prepare(
+    "INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_schema_version', ?)"
+  ).run(String(FTS_SCHEMA_VERSION));
+
+  const { c } = db.prepare("SELECT COUNT(*) AS c FROM instances").get() as { c: number };
+  if (c > 0) rebuildInstancesFts(db);
+}
+
+// GitHub repo topics (and future source-specific tag arrays) flattened for FTS.
+// Stored in source_payload_json at ingest; not copied to subject_authority_ids yet
+// (see docs/decisions/subject-authorities-deferred.md).
+function extractFtsTopics(source: string, sourcePayloadJson: string | null): string {
+  if (!sourcePayloadJson) return "";
+  try {
+    const payload = JSON.parse(sourcePayloadJson) as { topics?: unknown };
+    if (source !== "github" || !Array.isArray(payload.topics)) return "";
+    return payload.topics
+      .filter((t): t is string => typeof t === "string" && t.length > 0)
+      .join(" ");
+  } catch {
+    return "";
+  }
 }
 
 // Load the seen set for Instance dedup. O(N) at start; O(1) per check after.
@@ -184,12 +240,13 @@ export function instanceSeenKey(source: string, nativeId: string): string {
 export function upsertInstanceFts(db: DB, instanceId: string): void {
   const inst = db.prepare(
     `SELECT id, source, kind, url_canonical, title, description,
-            creator_authority_id, ingest_status, partial_reason
+            source_payload_json, creator_authority_id, ingest_status, partial_reason
      FROM instances WHERE id = ?`
   ).get(instanceId) as
     | {
         id: string; source: string; kind: string; url_canonical: string;
         title: string | null; description: string | null;
+        source_payload_json: string | null;
         creator_authority_id: string | null;
         ingest_status: string; partial_reason: string | null;
       }
@@ -230,12 +287,14 @@ export function upsertInstanceFts(db: DB, instanceId: string): void {
     }
   }
 
+  const topics = extractFtsTopics(inst.source, inst.source_payload_json);
+
   db.prepare("DELETE FROM instances_fts WHERE instance_id = ?").run(instanceId);
   db.prepare(
     `INSERT INTO instances_fts (
        instance_id, title, description, folder_paths, creator_name,
-       url_canonical, source, kind, ingest_status, partial_reason
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       url_canonical, topics, source, kind, ingest_status, partial_reason
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     inst.id,
     inst.title ?? "",
@@ -243,6 +302,7 @@ export function upsertInstanceFts(db: DB, instanceId: string): void {
     folder_paths,
     creator_name,
     inst.url_canonical,
+    topics,
     inst.source,
     inst.kind,
     inst.ingest_status,
