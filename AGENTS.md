@@ -18,7 +18,10 @@ Node 22+. No build step (TypeScript runs through `tsx`).
 
 ```bash
 npm install
+cp .env.example .env   # fill in API keys; .env is gitignored
 ```
+
+`src/config.ts` loads project-root `.env` via Node's `loadEnvFile` on startup.
 
 Storage defaults to `~/.pre-kompl/catalog.db`. Override with `PRE_KOMPL_DB` and/or `PRE_KOMPL_HOME`. Tests and ad-hoc runs should point `PRE_KOMPL_DB` at a scratch path — never write to the user's real catalog.
 
@@ -38,6 +41,7 @@ npx tsx --no-warnings src/cli.ts <subcommand>
 
 # Subcommands: ingest, status, errors, partials, reclassify, search, rebuild-fts, sql
 # search flags: --source, --kind, --folder, --creator, --topic, --status, --partial, --limit, --json
+# sql: read-only SELECT/WITH; --json for row objects; --limit appends LIMIT when query has none
 # See README.md "Run" and "Search" sections for examples.
 ```
 
@@ -95,7 +99,8 @@ src/
 - **Folder paths are pipe-separated.** `"Bookmarks|Cyber DYOR|A.I."` — when writing them into FTS, split on `|` so each segment tokenizes independently (see `upsertInstanceFts` in `db.ts`).
 - **Tweets in non-Twitter files** are real. A tweet URL inside a Chrome bookmark file gets synthesized into the Twitter pipeline as a URL-only entry, ingests as `partial / empty_text`, and dedups against the real Twitter JSON export later. See [README.md](./README.md#what-the-four-pipelines-do) bottom paragraph.
 - **`reclassify` is logic-only.** It re-applies status rules to existing rows without network calls. Anything that needs a re-fetch requires deleting `~/.pre-kompl/catalog.db` and re-running ingest — there is no in-place re-fetch.
-- **`rebuild-fts` exists** for upgrading from pre-FTS catalogs. Run it once after a clone+ingest if the FTS table looks empty.
+- **`rebuild-fts` exists** for upgrading from pre-FTS catalogs. Run it once after a clone+ingest if the FTS table looks empty. FTS column-set changes are tracked via `FTS_SCHEMA_VERSION` in `db.ts`; `openDb()` auto-migrates (drop/recreate + rebuild) when the version on disk differs.
+- **`pre-kompl sql` is read-only.** Opens the DB with `{ readonly: true }`. Rejects non-SELECT/WITH statements.
 - **CRLF on Windows.** Repo has no `.gitattributes` yet. Git will warn about LF→CRLF conversions on Windows clones; safe to ignore.
 
 ## Spec

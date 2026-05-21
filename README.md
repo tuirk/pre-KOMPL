@@ -18,6 +18,14 @@ No build step. `tsx` runs TypeScript directly.
 
 ## Configure
 
+Copy the template and fill in keys (`.env` is gitignored):
+
+```bash
+cp .env.example .env   # Windows: copy .env.example .env
+```
+
+`src/config.ts` loads project-root `.env` automatically on startup (Node 22+ `loadEnvFile` — no dotenv dependency). You can also export vars in your shell:
+
 ```bash
 export YOUTUBE_API_KEY="..."     # optional — without it, YouTube Instances ingest as partial / missing_api_key
 export GITHUB_TOKEN="..."         # optional — without it, GitHub Instances ingest as partial / missing_api_key
@@ -52,7 +60,8 @@ npx tsx --no-warnings src/cli.ts reclassify
 ### Search
 
 ```bash
-# Free-text search across title, description, folder paths, creator names, URLs.
+# Free-text search across title, description, folder paths, creator names, URLs,
+# and GitHub repo topics (when set at ingest).
 # BM25-ranked, prefix-matched (memory matches memgpt, memories, agentmemory),
 # porter-stemmed for English. Stopwords (the/for/with) dropped automatically.
 npx tsx --no-warnings src/cli.ts search "agent memory"
@@ -67,8 +76,11 @@ npx tsx --no-warnings src/cli.ts search "trading" --kind video --limit 50
 # Dead-link cleanup (default --status ok hides partials; broaden to see them)
 npx tsx --no-warnings src/cli.ts search "" --partial dead_link --status all
 
-# JSON envelope (items + facets + relaxation flag) for programmatic use
+# JSON envelope (items + facets + relaxed_mode) for programmatic use
 npx tsx --no-warnings src/cli.ts search "agents" --json
+
+# Rebuild FTS index manually (usually unnecessary — openDb auto-migrates FTS schema)
+npx tsx --no-warnings src/cli.ts rebuild-fts
 ```
 
 Flags: `--source`, `--kind`, `--folder`, `--creator`, `--topic`, `--status` (default `ok`), `--partial`, `--limit` (default 20, cap 100), `--json`.
@@ -104,10 +116,13 @@ The changelog you receive with each pre-kompl update will tell you which one.
 What the skill knows:
 
 - **The two access patterns.** Known-item search (*"that Karpathy GPT video"*) vs. subject search (*"what do I have on agent memory"*). Different phrasings, different ways to read the result set, both routed through the same `search` command.
+- **A multi-pass agent playbook.** Start with `--json`, relax/broaden on zero hits, dedupe by `instance_id` for inventory questions, use facets to suggest `--source` / `--folder` / `--creator` / `--topic` refinements.
 - **When to use `--json` vs. pretty output.** Pretty for the human; `--json` envelope when the agent needs the facet counts to reason about refinements before answering.
-- **The envelope shape.** `items[]`, `count`, `relaxed`, and `facets` with per-source / per-kind / per-folder / per-creator counts so the agent can suggest narrowings instead of dumping 100 hits.
-- **The schema for the raw-SQL escape hatch.** When `search` doesn't fit — date ranges, exact URL lookups, dead-link cleanup, cross-creator joins — the skill lists the `instances`, `items`, `authorities` columns the agent needs and gives ready-to-use SQL recipes for creator browse, recent saves, folder tree, and dead-link audit.
+- **The envelope shape.** `items[]` (with `topics[]` on GitHub hits), `count`, `relaxed`, `relaxed_mode` (`none` / `drop_token` / `or`), and `facets` with per-source / per-kind / per-folder / per-creator / per-topic counts.
+- **The `sql` escape hatch.** Read-only `SELECT` / `WITH` via `pre-kompl sql` (pipe or `--json` output; no separate sqlite3 CLI needed on Windows). The skill also documents the `instances`, `items`, and `authorities` columns for ad-hoc queries.
 - **Honest limits.** Catalog metadata is triage-grade (one-line GitHub descriptions, one-sentence og:descriptions). The skill tells the agent to say so plainly when asked comparative questions ("which is best for X") rather than fabricating answers from short descriptions.
+
+Design note: GitHub topics are indexed in FTS now; mapping them to subject authorities is deferred — see [`docs/decisions/subject-authorities-deferred.md`](./docs/decisions/subject-authorities-deferred.md).
 
 You can also read `SKILL.md` as a human usage guide for the `search` command — it's written as prose, not as a magic incantation.
 
