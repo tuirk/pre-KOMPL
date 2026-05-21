@@ -21,6 +21,7 @@
 // burns credits. For that, drop the DB and re-ingest.
 
 import type { DB } from "./db.js";
+import { upsertInstanceFts } from "./db.js";
 import { isBrandDefaultTitle } from "./parsers/web-peek.js";
 import { looksLikeDeadLinkTitle } from "./sources/web.js";
 
@@ -104,6 +105,9 @@ export function reclassifyAll(db: DB): ReclassifyResult {
       evaluation.source_payload_json,
       row.id
     );
+    // Reclassify changes ingest_status/partial_reason which are searchable FTS
+    // columns (used for filtering). Re-sync the FTS row from live instance data.
+    upsertInstanceFts(db, row.id);
   }
 
   return result;

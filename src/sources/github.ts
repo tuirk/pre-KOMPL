@@ -3,6 +3,7 @@
 // Gracefully degrades when GITHUB_TOKEN absent.
 import type { RawBookmark, Kind } from "../types.js";
 import type { IngestContext } from "../context.js";
+import { upsertInstanceFts } from "../db.js";
 import { canonicalizeGithub } from "../canonicalize.js";
 import { createWorkForInstance, findOrCreateCreatorAuthority } from "../authorities.js";
 import { upsertItem } from "./web.js";

@@ -6,21 +6,13 @@ v0.1 MVP — CLI ingest of a folder of bookmark exports / notes files into a loc
 
 ## Install
 
-Needs Node 22.5+ (uses built-in `node:sqlite`, no native compilation).
+Needs Node 22+. Uses `better-sqlite3` (native, FTS5 enabled). Prebuilt binaries ship for Windows/macOS/Linux on common Node versions — no C compiler required for the supported platforms.
 
 ```bash
 npm install
 ```
 
 No build step. `tsx` runs TypeScript directly.
-
-On Node 22.5–22.16, `node:sqlite` is gated behind a flag. If you see `ERR_UNKNOWN_BUILTIN_MODULE`, run every command with `NODE_OPTIONS="--experimental-sqlite"`:
-
-```bash
-NODE_OPTIONS="--experimental-sqlite" npx tsx --no-warnings src/cli.ts ingest /path/to/folder
-```
-
-On Node 22.17+ the flag is no longer required.
 
 ## Configure
 
@@ -54,6 +46,30 @@ npx tsx --no-warnings src/cli.ts reclassify
 ```
 
 `npm run ingest -- /path/to/folder` works too, as does `npm run status` etc.
+
+### Search
+
+```bash
+# Free-text search across title, description, folder paths, creator names, URLs.
+# BM25-ranked, prefix-matched (memory matches memgpt, memories, agentmemory),
+# porter-stemmed for English. Stopwords (the/for/with) dropped automatically.
+npx tsx --no-warnings src/cli.ts search "agent memory"
+
+# Narrow by facet
+npx tsx --no-warnings src/cli.ts search "rag" --source github
+npx tsx --no-warnings src/cli.ts search "" --folder "Bookmarks|Cyber DYOR|A.I."
+npx tsx --no-warnings src/cli.ts search "trading" --kind video --limit 50
+
+# Dead-link cleanup (default --status ok hides partials; broaden to see them)
+npx tsx --no-warnings src/cli.ts search "" --partial dead_link --status all
+
+# JSON envelope (items + facets + relaxation flag) for programmatic use
+npx tsx --no-warnings src/cli.ts search "agents" --json
+```
+
+Flags: `--source`, `--kind`, `--folder`, `--status` (default `ok`), `--partial`, `--limit` (default 20, cap 100), `--json`.
+
+Zero-result queries auto-relax by dropping the rightmost token and retrying once. Empty query is allowed only when at least one filter is set — otherwise it would dump the whole catalog.
 
 ### When to re-ingest vs. reclassify
 

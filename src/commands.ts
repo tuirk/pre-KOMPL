@@ -1,8 +1,9 @@
 // CLI command handlers.
 import { ingestFolder } from "./orchestrator.js";
-import { openDb } from "./db.js";
+import { openDb, rebuildInstancesFts } from "./db.js";
 import { loadConfig } from "./config.js";
 import { reclassifyAll } from "./reclassify.js";
+import { searchCatalog, type SearchResult, type SearchOptions } from "./search.js";
 import type { ProgressEvent } from "./context.js";
 
 function fmtMs(ms: number): string {
@@ -220,4 +221,141 @@ export function cmdReclassify(): void {
     console.log(`      ${truncate(s.url, 80)}`);
     console.log(`      (${s.reason})`);
   }
+}
+
+export interface SearchCmdOpts {
+  source?: string;        // comma-separated list
+  kind?: string;
+  folder?: string;        // prefix
+  status?: string;        // comma-separated; default 'ok'
+  partial?: string;       // comma-separated partial_reasons (overrides status)
+  limit?: string;         // numeric string from commander
+  json?: boolean;
+}
+
+export function cmdSearch(query: string, opts: SearchCmdOpts = {}): void {
+  const config = loadConfig();
+  const db = openDb(config.dbPath);
+
+  const splitCsv = (s: string | undefined): string[] | undefined =>
+    s ? s.split(",").map((x) => x.trim()).filter(Boolean) : undefined;
+
+  // --status all is the "include every status" sentinel. Cleaner than empty string.
+  let statusFilter: string[] | undefined;
+  if (opts.status === "all") statusFilter = [];
+  else if (opts.status) statusFilter = splitCsv(opts.status);
+  else statusFilter = undefined; // let searchCatalog apply its 'ok' default
+
+  const searchOpts: SearchOptions = {
+    limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
+    facet_filters: {
+      source: splitCsv(opts.source),
+      kind: splitCsv(opts.kind),
+      folder_prefix: opts.folder,
+      ingest_status: statusFilter,
+      partial_reason: splitCsv(opts.partial),
+    },
+  };
+
+  const result = searchCatalog(db, query, searchOpts);
+  db.close();
+
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  printSearchResult(result);
+}
+
+function printSearchResult(r: SearchResult): void {
+  console.log(``);
+  if (r.count === 0) {
+    console.log(`No results for "${r.query_raw}".`);
+    if (r.query_executed) {
+      console.log(`Tried: ${r.query_executed} (and relaxations) — nothing matched.`);
+    }
+    console.log(`Try: shorter query, different terms, or browse folders directly.`);
+    return;
+  }
+
+  const headerNote = r.relaxed
+    ? `${r.count} results for "${r.query_raw}" (relaxed → ${r.query_executed})`
+    : `${r.count} results for "${r.query_raw}"`;
+  console.log(headerNote);
+  console.log(``);
+
+  // Group by source for display (mirrors discovery-layer convention).
+  const bySource = new Map<string, typeof r.items>();
+  for (const h of r.items) {
+    const arr = bySource.get(h.source) ?? [];
+    arr.push(h);
+    bySource.set(h.source, arr);
+  }
+  const sourceOrder = ["github", "youtube", "web", "twitter"];
+  const ordered = [
+    ...sourceOrder.filter((s) => bySource.has(s)),
+    ...[...bySource.keys()].filter((s) => !sourceOrder.includes(s)),
+  ];
+
+  for (const src of ordered) {
+    const rows = bySource.get(src)!;
+    console.log(`${src.toUpperCase()} (${rows.length})`);
+    for (const h of rows) {
+      console.log(`  ${truncate(h.title || "(no title)", 80)}`);
+      if (h.description && h.description.length > 0 &&
+          !h.description.toLowerCase().startsWith((h.title ?? "").toLowerCase().slice(0, 20))) {
+        console.log(`    ${truncate(h.description, 110)}`);
+      }
+      const folder = h.folder_paths[0] ?? "—";
+      console.log(`    folder: ${folder}`);
+      console.log(`    ${truncate(h.url_canonical, 90)}`);
+      if (h.partial_reason) {
+        console.log(`    ⚠ partial:${h.partial_reason}`);
+      }
+      console.log(``);
+    }
+  }
+
+  if (r.count > r.items.length) {
+    console.log(`  → ${r.count - r.items.length} more matching. Use --limit to see more.`);
+    console.log(``);
+  }
+
+  // Facet panel — discovery-layer refinement affordance.
+  const f = r.facets;
+  const hasFacets =
+    Object.keys(f.source).length > 1 ||
+    Object.keys(f.kind).length > 1 ||
+    f.folder.length > 0 ||
+    f.creator.length > 0;
+  if (hasFacets) {
+    console.log(`Refine with:`);
+    if (Object.keys(f.source).length > 1) {
+      const entries = Object.entries(f.source).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k} (${v})`).join(", ");
+      console.log(`  --source ${entries}`);
+    }
+    if (f.folder.length > 0) {
+      console.log(`  --folder:`);
+      for (const fld of f.folder.slice(0, 6)) {
+        console.log(`    "${fld.path}" (${fld.count})`);
+      }
+    }
+    if (f.creator.length > 0) {
+      console.log(`  top creators:`);
+      for (const c of f.creator.slice(0, 6)) {
+        console.log(`    ${c.name} (${c.count})`);
+      }
+    }
+  }
+}
+
+export function cmdRebuildFts(): void {
+  const config = loadConfig();
+  const db = openDb(config.dbPath);
+  const t0 = Date.now();
+  const n = rebuildInstancesFts(db);
+  const ms = Date.now() - t0;
+  db.close();
+  console.log(`Rebuilt instances_fts: ${n} rows in ${ms}ms.`);
 }

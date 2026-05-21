@@ -3,6 +3,7 @@
 // Gracefully degrades when YOUTUBE_API_KEY is absent — records Instance as partial.
 import type { RawBookmark, Kind } from "../types.js";
 import type { IngestContext } from "../context.js";
+import { upsertInstanceFts } from "../db.js";
 import { canonicalizeYoutube } from "../canonicalize.js";
 import { createWorkForInstance, findOrCreateCreatorAuthority } from "../authorities.js";
 import { findYoutubeAuthorityByHandle } from "../authority-lookup.js";

@@ -2,6 +2,7 @@
 // og-peek → JSON-LD → Firecrawl-rescue (deferred for v0; we just record fc_skipped).
 import type { RawBookmark, Kind } from "../types.js";
 import type { IngestContext } from "../context.js";
+import { upsertInstanceFts } from "../db.js";
 import { canonicalizeWeb } from "../canonicalize.js";
 import { ogPeek, isBrandDefaultTitle } from "../parsers/web-peek.js";
 import { fcScrape } from "../firecrawl.js";
@@ -285,6 +286,8 @@ function upsertItem(
       ctx.db.prepare(
         "UPDATE items SET bookmark_folder_path = ?, ingested_at = ? WHERE id = ?"
       ).run(bm.bookmark_folder_path, Date.now(), renameOf);
+      // Folder path changed → refresh FTS so folder_paths reflects the rename.
+      upsertInstanceFts(ctx.db, instanceId);
       return;
     }
   }
@@ -292,7 +295,7 @@ function upsertItem(
   // Check item composite existence
   const key = buildItemCompositeKey(source, instanceId, bm.url, bm.save_date, bm.bookmark_folder_path);
   const exists = checkItemComposite(ctx, source, instanceId, bm);
-  if (exists) return; // dedup hit
+  if (exists) return; // dedup hit — no folder change, no FTS refresh needed
 
   const itemId = newItemId();
   ctx.db.prepare(`
@@ -310,6 +313,9 @@ function upsertItem(
     bm.source_export_file, Date.now()
   );
   ctx.itemsCreated++;
+  // New item → folder_paths on this instance's FTS row may now include a new
+  // folder. Refresh. (Idempotent if the folder was already covered.)
+  upsertInstanceFts(ctx.db, instanceId);
 }
 
 function checkItemComposite(

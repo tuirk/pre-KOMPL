@@ -3,6 +3,7 @@
 // No live API. Bookmark export JSON is the only input.
 import type { RawBookmark } from "../types.js";
 import type { IngestContext } from "../context.js";
+import { upsertInstanceFts } from "../db.js";
 import type { ParsedTweet } from "../parsers/twitter-parser.js";
 import { canonicalizeTwitter } from "../canonicalize.js";
 import { createWorkForInstance, findOrCreateCreatorAuthority } from "../authorities.js";
