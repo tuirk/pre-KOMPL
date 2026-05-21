@@ -224,12 +224,14 @@ export function cmdReclassify(): void {
 }
 
 export interface SearchCmdOpts {
-  source?: string;        // comma-separated list
+  source?: string;
   kind?: string;
-  folder?: string;        // prefix
-  status?: string;        // comma-separated; default 'ok'
-  partial?: string;       // comma-separated partial_reasons (overrides status)
-  limit?: string;         // numeric string from commander
+  folder?: string;
+  creator?: string;
+  topic?: string;
+  status?: string;
+  partial?: string;
+  limit?: string;
   json?: boolean;
 }
 
@@ -252,6 +254,8 @@ export function cmdSearch(query: string, opts: SearchCmdOpts = {}): void {
       source: splitCsv(opts.source),
       kind: splitCsv(opts.kind),
       folder_prefix: opts.folder,
+      creator_prefix: splitCsv(opts.creator),
+      topic_prefix: splitCsv(opts.topic),
       ingest_status: statusFilter,
       partial_reason: splitCsv(opts.partial),
     },
@@ -279,7 +283,9 @@ function printSearchResult(r: SearchResult): void {
   }
 
   const headerNote = r.relaxed
-    ? `${r.count} results for "${r.query_raw}" (relaxed → ${r.query_executed})`
+    ? r.relaxed_mode === "or"
+      ? `${r.count} results for "${r.query_raw}" (OR-relaxed → ${r.query_executed})`
+      : `${r.count} results for "${r.query_raw}" (relaxed → ${r.query_executed})`
     : `${r.count} results for "${r.query_raw}"`;
   console.log(headerNote);
   console.log(``);
@@ -327,7 +333,8 @@ function printSearchResult(r: SearchResult): void {
     Object.keys(f.source).length > 1 ||
     Object.keys(f.kind).length > 1 ||
     f.folder.length > 0 ||
-    f.creator.length > 0;
+    f.creator.length > 0 ||
+    f.topic.length > 0;
   if (hasFacets) {
     console.log(`Refine with:`);
     if (Object.keys(f.source).length > 1) {
@@ -342,9 +349,15 @@ function printSearchResult(r: SearchResult): void {
       }
     }
     if (f.creator.length > 0) {
-      console.log(`  top creators:`);
+      console.log(`  --creator:`);
       for (const c of f.creator.slice(0, 6)) {
         console.log(`    ${c.name} (${c.count})`);
+      }
+    }
+    if (f.topic.length > 0) {
+      console.log(`  --topic:`);
+      for (const t of f.topic.slice(0, 6)) {
+        console.log(`    ${t.name} (${t.count})`);
       }
     }
   }
@@ -358,4 +371,64 @@ export function cmdRebuildFts(): void {
   const ms = Date.now() - t0;
   db.close();
   console.log(`Rebuilt instances_fts: ${n} rows in ${ms}ms.`);
+}
+
+export interface SqlCmdOpts {
+  json?: boolean;
+  limit?: string;
+}
+
+function isReadOnlySql(query: string): boolean {
+  const trimmed = query.trim().replace(/^\/\*[\s\S]*?\*\//, "").trim();
+  const first = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
+  return first === "select" || first === "with";
+}
+
+function hasLimitClause(query: string): boolean {
+  return /\blimit\b/i.test(query);
+}
+
+export function cmdSql(query: string, opts: SqlCmdOpts = {}): void {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    console.error("Error: empty SQL query.");
+    process.exit(1);
+  }
+  if (!isReadOnlySql(trimmed)) {
+    console.error("Error: only SELECT / WITH queries are allowed.");
+    process.exit(1);
+  }
+
+  let sql = trimmed.replace(/;\s*$/, "");
+  if (opts.limit) {
+    const n = parseInt(opts.limit, 10);
+    if (!hasLimitClause(sql) && Number.isFinite(n) && n > 0) {
+      sql += ` LIMIT ${n}`;
+    }
+  }
+
+  const config = loadConfig();
+  const db = openDb(config.dbPath, { readonly: true });
+  try {
+    const rows = db.prepare(sql).all() as Record<string, unknown>[];
+    if (opts.json) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+    if (rows.length === 0) {
+      console.log("(0 rows)");
+      return;
+    }
+    const cols = Object.keys(rows[0]!);
+    console.log(cols.join("|"));
+    for (const row of rows) {
+      console.log(cols.map((c) => String(row[c] ?? "")).join("|"));
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`SQL error: ${msg}`);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
 }

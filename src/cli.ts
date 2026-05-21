@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { cmdIngest, cmdStatus, cmdErrors, cmdPartials, cmdReclassify, cmdSearch, cmdRebuildFts } from "./commands.js";
+import { cmdIngest, cmdStatus, cmdErrors, cmdPartials, cmdReclassify, cmdSearch, cmdRebuildFts, cmdSql } from "./commands.js";
 
 const program = new Command();
 program
@@ -51,6 +51,8 @@ program
   .option("--source <list>", "comma-separated source filter: github,youtube,web,twitter")
   .option("--kind <list>", "comma-separated kind filter: video,github-repo,article,...")
   .option("--folder <prefix>", "filter by folder-path prefix")
+  .option("--creator <list>", "comma-separated creator name prefix filter")
+  .option("--topic <list>", "comma-separated GitHub topic prefix filter")
   .option("--status <list>", "comma-separated ingest_status filter (default: ok)")
   .option("--partial <list>", "comma-separated partial_reason filter (e.g. dead_link)")
   .option("--limit <n>", "max results (default 20, cap 100)")
@@ -64,6 +66,15 @@ program
   .description("Rebuild the full-text-search index from current Instance data. Run once after upgrading from a pre-FTS DB.")
   .action(() => {
     cmdRebuildFts();
+  });
+
+program
+  .command("sql <query>")
+  .description("Run a read-only SELECT against the catalog (pipe-separated output, or --json)")
+  .option("--json", "output rows as a JSON array")
+  .option("--limit <n>", "append LIMIT n when the query has no LIMIT clause")
+  .action((query: string, opts) => {
+    cmdSql(query, opts);
   });
 
 program.parseAsync(process.argv).catch((e) => {
