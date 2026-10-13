@@ -1,5 +1,5 @@
-// All types for pre-kompl v0.
-// Schemas mirror /pre-kompl-spec/ but flattened for SQLite.
+// All shared types for pre-kompl.
+// Work / Instance / Item / Authority records, flattened for SQLite.
 // JSON columns: subject_authority_ids (Instance), variants/broader_ids/narrower_ids (Authority).
 
 export type Source = "youtube" | "github" | "twitter" | "web";

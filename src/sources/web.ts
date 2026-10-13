@@ -7,7 +7,7 @@ import { canonicalizeWeb } from "../canonicalize.js";
 import { ogPeek, isBrandDefaultTitle } from "../parsers/web-peek.js";
 import { fcScrape } from "../firecrawl.js";
 import { createWorkForInstance, newItemId, findOrCreateCreatorAuthority } from "../authorities.js";
-import { buildItemCompositeKey, findFolderRenameCandidate } from "../dedup.js";
+import { findFolderRenameCandidate } from "../dedup.js";
 
 const DONT_RETRY_HOSTS = new Set([
   "nytimes.com", "ft.com", "wsj.com", "bloomberg.com",
@@ -169,7 +169,7 @@ async function ingestOne(ctx: IngestContext, bm: RawBookmark): Promise<"created"
       partialReason = "dead_link";
       // Still populate any title FC managed to extract — useful for audits even
       // if the page is dead. ("Chart Not Found — TradingView" is more informative
-      // than a null title when bestie scans the partials view.)
+      // than a null title when the user scans the partials view.)
       if (fc.title) {
         title = fc.title;
         titleSource = "firecrawl";
@@ -293,7 +293,6 @@ function upsertItem(
   }
 
   // Check item composite existence
-  const key = buildItemCompositeKey(source, instanceId, bm.url, bm.save_date, bm.bookmark_folder_path);
   const exists = checkItemComposite(ctx, source, instanceId, bm);
   if (exists) return; // dedup hit — no folder change, no FTS refresh needed
 

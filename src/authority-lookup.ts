@@ -1,5 +1,5 @@
 // Authority lookup helpers — used by the YouTube channel-page resolver
-// to consolidate dupes WITHOUT an API call when bestie also bookmarked
+// to consolidate dupes WITHOUT an API call when the user also bookmarked
 // videos by the same channel.
 import type { DB } from "./db.js";
 

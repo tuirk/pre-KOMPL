@@ -1,163 +1,181 @@
-# pre-kompl
+# pre-KOMPL
 
-Lightweight catalog for thousands of saved bookmarks. Sits beneath Kompl.
+A personal bookmark catalog, built the way libraries build catalogs and scaled down for you. Your agent builds it, maintains it and searches it for you.
 
-v0.1 MVP — CLI ingest of a folder of bookmark exports / notes files into a local SQLite catalog.
+pre-KOMPL takes the exports you already have (browser bookmarks, X bookmarks, notes full of links), describes every link with structured metadata, merges the same link saved in different places and indexes it all in one SQLite file on your machine. You ask your agent a question in plain words. Through the included skill it runs several searches, merges what they find, and tells you what you actually saved on the topic and what's worth opening.
 
-Ships with an [agent skill](#agent-skill) at [`skills/pre-kompl-search/`](./skills/pre-kompl-search/) so you can ask an LLM agent things like *"what do I have on agent memory?"* or *"find my saved trading repos"* and have it query the catalog correctly.
+The library-science background behind the design is summarised in [Built on library science](#built-on-library-science).
+
+## Why
+
+Saves end up in silos. Browser bookmarks sit in folder trees that decay as they grow. X bookmarks live in another tool, starred repos and YouTube videos in their own apps, and links are scattered across notes files. Each silo has its own weak search, and none of them know about the others.
+
+The questions you actually ask cross all of them. "What do I have on agent memory?" needs repos, talks and articles together. "That talk I saved around the same time as the nanoGPT repo" needs dates across sources. pre-KOMPL doesn't ask you to re-file anything. It catalogs what's already there, flags dead links and failed fetches instead of dropping them, and gives one ranked answer across every source.
+
+## Use it through your agent
+
+The skill in [`skills/pre-kompl-search/`](./skills/pre-kompl-search/SKILL.md) is what makes pre-KOMPL useful day to day. One question to the agent becomes a small search session:
+
+- it turns your question into keyword searches, because a catalog matches words, not sentences
+- it reads the facet counts (source, kind, creator, folder) and narrows or widens from there
+- it relaxes a query that finds nothing, and drops to read-only SQL for dates and exact lookups
+- it merges the hits from every search, removes repeats, and answers with the links grouped and commented
+- it says plainly when metadata is thin: the catalog holds one-line descriptions, not page contents
+
+So "what did I save about showing uncertainty in AI answers?" comes back as the papers, talks, repos and posts you saved on it, with a line on why each one matters, instead of a raw result list.
+
+To install the skill, copy the `skills/pre-kompl-search/` folder into the skills directory your agent loads from (for Claude Code, `~/.claude/skills/`). The skill calls the `pre-kompl` command, so run `npm link` once in the repo folder (see [Install](#install)). Agents without skill support can be given `SKILL.md` as plain instructions.
+
+## pre-KOMPL and KOMPL
+
+The name says where it sits: before [KOMPL](https://github.com/tuirk/Kompl). pre-KOMPL was originally designed as a cheap layer in front of KOMPL's costly ingest, but it works on its own. Skip this section if you don't use KOMPL.
+
+Together they split the work the way libraries do: the catalog indexes descriptions cheaply, and the repository holds and processes the full text. KOMPL reads every source in full and compiles it into a wiki, which costs time, LLM tokens and scraping credits for each one. pre-KOMPL is for when you don't yet know what you have. Catalog everything for a few API calls, see what's there, and send only what's worth that cost to KOMPL.
 
 ## Install
 
-Needs Node 22+. Uses `better-sqlite3` (native, FTS5 enabled). Prebuilt binaries ship for Windows/macOS/Linux on common Node versions — no C compiler required for the supported platforms.
+Needs Node.js 22 or newer.
 
 ```bash
+git clone https://github.com/tuirk/pre-KOMPL.git
+cd pre-KOMPL
 npm install
+npm link        # puts the pre-kompl command on your PATH, for you and your agent
 ```
 
-No build step. `tsx` runs TypeScript directly.
+`better-sqlite3` ships prebuilt binaries for Windows, macOS and Linux on current Node versions, so common platforms need no compiler. There is no build step; TypeScript runs through `tsx`. Without `npm link`, run the CLI from the repo folder as `npx pre-kompl <command>`.
 
-## Configure
-
-Copy the template and fill in keys (`.env` is gitignored):
+## Build your catalog
 
 ```bash
-cp .env.example .env   # Windows: copy .env.example .env
+# Put your exports in one folder: the browser's bookmarks .html,
+# an X bookmarks .json, any notes files with links. Then:
+pre-kompl ingest ~/bookmark-exports
+pre-kompl status
 ```
 
-`src/config.ts` loads project-root `.env` automatically on startup (Node 22+ `loadEnvFile` — no dotenv dependency). You can also export vars in your shell:
+Re-running `ingest` on the same folder is cheap: resources already in the catalog are not fetched again. The catalog lives at `~/.pre-kompl/catalog.db`. Set `PRE_KOMPL_DB` to use a different file, or `PRE_KOMPL_HOME` to move the whole folder.
 
-```bash
-export YOUTUBE_API_KEY="..."     # optional — without it, YouTube Instances ingest as partial / missing_api_key
-export GITHUB_TOKEN="..."         # optional — without it, GitHub Instances ingest as partial / missing_api_key
-export FIRECRAWL_API_KEY="..."    # optional — enables the JS-rendered rescue cascade for blocked/failed web URLs
-export FIRECRAWL_BUDGET="500"     # optional — max Firecrawl credits per run (default 500 = free-tier monthly cap)
-```
+Then ask your agent. Or search yourself, see [Search from the command line](#search-from-the-command-line).
 
-Storage defaults to `~/.pre-kompl/catalog.db`. Override with `PRE_KOMPL_DB` and/or `PRE_KOMPL_HOME`.
+### What it reads
 
-## Run
+`ingest` walks the folder and its subfolders (skipping dotfiles and `node_modules`) and sniffs each file's content, so file names don't matter.
 
-```bash
-# Ingest a folder. Pre-kompl auto-detects what each file is.
-# Supports: Netscape browser-bookmarks HTML, Twitter JSON exports (7 shapes), notes files (any text with URLs)
-npx tsx --no-warnings src/cli.ts ingest /path/to/your/exports/
-
-# Check what's in the catalog
-npx tsx --no-warnings src/cli.ts status
-
-# See what failed
-npx tsx --no-warnings src/cli.ts errors
-
-# See what ingested but is incomplete (and why)
-npx tsx --no-warnings src/cli.ts partials
-
-# Re-apply pure-logic rules to existing rows (no network, no credits)
-npx tsx --no-warnings src/cli.ts reclassify
-```
-
-`npm run ingest -- /path/to/folder` works too, as does `npm run status` etc.
-
-### Search
-
-```bash
-# Free-text search across title, description, folder paths, creator names, URLs,
-# and GitHub repo topics (when set at ingest).
-# BM25-ranked, prefix-matched (memory matches memgpt, memories, agentmemory),
-# porter-stemmed for English. Stopwords (the/for/with) dropped automatically.
-npx tsx --no-warnings src/cli.ts search "agent memory"
-
-# Narrow by facet
-npx tsx --no-warnings src/cli.ts search "rag" --source github
-npx tsx --no-warnings src/cli.ts search "" --folder "Bookmarks|Cyber DYOR|A.I."
-npx tsx --no-warnings src/cli.ts search "memory" --creator vectorize
-npx tsx --no-warnings src/cli.ts search "" --topic ai-memory --source github
-npx tsx --no-warnings src/cli.ts search "trading" --kind video --limit 50
-
-# Dead-link cleanup (default --status ok hides partials; broaden to see them)
-npx tsx --no-warnings src/cli.ts search "" --partial dead_link --status all
-
-# JSON envelope (items + facets + relaxed_mode) for programmatic use
-npx tsx --no-warnings src/cli.ts search "agents" --json
-
-# Rebuild FTS index manually (usually unnecessary — openDb auto-migrates FTS schema)
-npx tsx --no-warnings src/cli.ts rebuild-fts
-```
-
-Flags: `--source`, `--kind`, `--folder`, `--creator`, `--topic`, `--status` (default `ok`), `--partial`, `--limit` (default 20, cap 100), `--json`.
-
-Zero-result queries auto-relax by dropping the rightmost token and retrying; if still zero with 2+ tokens, retry once with OR across tokens. Empty query is allowed only when at least one filter is set — otherwise it would dump the whole catalog.
-
-### SQL escape hatch
-
-```bash
-# Read-only SELECT (pipe-separated output; works on Windows without sqlite3 CLI)
-npx tsx --no-warnings src/cli.ts sql "SELECT bookmark_folder_path, COUNT(*) c FROM items GROUP BY 1 ORDER BY c DESC LIMIT 5"
-npx tsx --no-warnings src/cli.ts sql "SELECT title, source FROM instances WHERE ingest_status='ok' LIMIT 10" --json
-```
-
-### When to re-ingest vs. reclassify
-
-Ingest dedups on `(source, native_id)` — re-running ingest on the same bookmarks file is a no-op for Instances already in the catalog (no network calls, no row updates). That's a deliberate optimization so you don't burn API credits re-fetching the same 365 URLs. The side effect: if pre-kompl ships a logic-only fix (a tightened dead-link heuristic, a sharpened brand-default detector, a corrected status mapping), those rules need to be re-applied to existing rows.
-
-| Kind of upstream change | Command to apply it |
+| Input | Details |
 | --- | --- |
-| Pure-logic fix (dead-link, brand-default, status-semantics, legacy migration) | `pre-kompl reclassify` — ~50ms, deterministic, no credits |
-| Anything that needs re-fetching (new YouTube fields, Firecrawl pipeline improvement, new external API) | Delete `~/.pre-kompl/catalog.db` and re-run `pre-kompl ingest` |
-| Canonicalization-rules version bumped | DB will refuse to ingest until you wipe (a migration tool is the longer-term answer) |
+| Browser bookmark exports (Netscape HTML) | The "Export bookmarks" file from Chrome, Brave, Edge, Firefox or Safari. Folders are kept. |
+| X/Twitter bookmark JSON | The common shapes produced by bookmark-export browser extensions, bookmarklets and CLI tools. |
+| Notes files | Any text file containing URLs (`.md`, `.txt`, ...): markdown links and bare URLs. |
 
-The changelog you receive with each pre-kompl update will tell you which one.
+Binary files and text without URLs are skipped and listed in the ingest output. Each URL goes to one of four pipelines: YouTube, GitHub, X/Twitter or general web. GitHub gists are logged as unsupported (`pre-kompl errors`).
 
-`reclassify` is idempotent: running it against an already-current DB prints `Nothing to reclassify — every existing row already matches current rules.`
+### API keys are optional
 
-## Agent skill
+Everything works without keys. Keys add metadata:
 
-[`skills/pre-kompl-search/SKILL.md`](./skills/pre-kompl-search/SKILL.md) is a model-agnostic skill file that teaches an LLM agent how to query your catalog correctly. The format follows the emerging agent-skills convention (YAML frontmatter with `name` + `description` so a host can decide when to load it, prose body for the model to read). Drop the `skills/` directory into whatever agent harness you use — anything that auto-discovers a `skills/` folder will pick it up; anything that doesn't, you can load the file manually.
+| Variable | What it adds | Without it |
+| --- | --- | --- |
+| `YOUTUBE_API_KEY` | Video title, description, channel, tags, duration; channel and playlist pages resolved | Stored as `partial / missing_api_key`, keeping the bookmark's title and URL |
+| `GITHUB_TOKEN` | Repo description, topics (searchable), languages, stars | Stored as `partial / missing_api_key`, keeping the bookmark's title and URL |
+| `FIRECRAWL_API_KEY` | A JS-rendering fallback for web pages that block or fail the direct fetch (1 credit per page) | The page keeps whatever the direct fetch got |
+| `FIRECRAWL_BUDGET` | Cap on Firecrawl credits per ingest run (default 500) | |
 
-What the skill knows:
+Put them in a `.env` file in the repo folder (`cp .env.example .env`). It is loaded on every run, wherever you run `pre-kompl` from. Exporting them in your shell works too.
 
-- **The two access patterns.** Known-item search (*"that Karpathy GPT video"*) vs. subject search (*"what do I have on agent memory"*). Different phrasings, different ways to read the result set, both routed through the same `search` command.
-- **A multi-pass agent playbook.** Start with `--json`, relax/broaden on zero hits, dedupe by `instance_id` for inventory questions, use facets to suggest `--source` / `--folder` / `--creator` / `--topic` refinements.
-- **When to use `--json` vs. pretty output.** Pretty for the human; `--json` envelope when the agent needs the facet counts to reason about refinements before answering.
-- **The envelope shape.** `items[]` (with `topics[]` on GitHub hits), `count`, `relaxed`, `relaxed_mode` (`none` / `drop_token` / `or`), and `facets` with per-source / per-kind / per-folder / per-creator / per-topic counts.
-- **The `sql` escape hatch.** Read-only `SELECT` / `WITH` via `pre-kompl sql` (pipe or `--json` output; no separate sqlite3 CLI needed on Windows). The skill also documents the `instances`, `items`, and `authorities` columns for ad-hoc queries.
-- **Honest limits.** Catalog metadata is triage-grade (one-line GitHub descriptions, one-sentence og:descriptions). The skill tells the agent to say so plainly when asked comparative questions ("which is best for X") rather than fabricating answers from short descriptions.
+Web pages need no key: pre-KOMPL fetches the start of each page directly to read its title and description. X/Twitter never uses an API; tweet text comes from your JSON export. A tweet URL that only appears in a browser bookmark or notes file is stored as `partial / empty_text` with the bookmark's title.
 
-Design note: GitHub topics are indexed in FTS now; mapping them to subject authorities is deferred — see [`docs/decisions/subject-authorities-deferred.md`](./docs/decisions/subject-authorities-deferred.md).
+Partial rows are hidden from search by default because their metadata is thin. When a search hides matching partials it says so, for example `→ 3 partial matches hidden — use --status all to include them.` `pre-kompl partials` lists them grouped by reason. Adding a key later doesn't upgrade existing rows; see [Re-ingest or reclassify](#re-ingest-or-reclassify).
 
-You can also read `SKILL.md` as a human usage guide for the `search` command — it's written as prose, not as a magic incantation.
+### Folders are optional
 
-## What the four pipelines do
+Browser folders, if you have them, are kept as one more search signal. Notes files and X exports have no folders, and nothing depends on them. The browser's own root containers ("Bookmarks bar", "Other bookmarks", "Bookmarks Menu", "Favorites bar" and so on) are dropped: a bookmark under Bookmarks bar → Research is stored as `Research`, and one sitting directly in the bar has no folder. Nested folders are joined with `|`, as in `Research|Agents`.
 
-| Source  | API           | Without key                                | Dedup composite                              |
-| ------- | ------------- | ------------------------------------------ | -------------------------------------------- |
-| YouTube | Data API v3   | Instances saved as `partial / missing_api_key` | (instance_id, url_as_saved, save_date)       |
-| GitHub  | REST v3       | Instances saved as `partial / missing_api_key` | (instance_id, url_as_saved, save_date)       |
-| Twitter | none          | Twitter never uses an API                   | (instance_id, url_as_saved)                  |
-| Web     | og-peek + Firecrawl rescue | og-peek tries directly; on `blocked` / `failed` / `peek_exception` / `no_og_tags` / `brand_default_title`, Firecrawl `/v2/scrape` is retried (1 credit/call, JS-rendered). Dead-link signals (HTTP 4xx/5xx, soft-404 title patterns) demote the result to `partial / dead_link`. If Firecrawl can't help either, the original partial reason is preserved. | (instance_id, url_as_saved, save_date, bookmark_folder_path) |
+## Built on library science
 
-Tweet URLs that land in non-Twitter files (chrome bookmark, notes file) get synthesized into the Twitter pipeline as URL-only entries; they ingest as `partial / empty_text`. If the same tweet is *also* in a Twitter JSON export, the real export populates the Instance first and the synthesized version dedups (rich data wins).
+Libraries have spent 150 years on the problems a pile of bookmarks has. pre-KOMPL borrows the patterns that still work at the scale of one person's saves:
 
-## Spec
+| Problem | Library answer | In pre-KOMPL |
+| --- | --- | --- |
+| The same resource saved twice, in different places | Work / Instance / Item (FRBR, [BIBFRAME](https://www.loc.gov/bibframe/)) | Each save is an Item. The resource it points at is an Instance, so saves of the same video, repo or tweet collapse onto one Instance through its canonical ID. Works sit above Instances. |
+| Organising things on several axes at once | Faceted, post-coordinate classification (Ranganathan) | Kind, source, creator, folder, date and status are stored separately and combined at search time, instead of filing each save in one tree |
+| One creator, many names | Authority control (Cutter) | Each creator gets one authority record per platform, holding the display name and the handle as a variant. Both are indexed, so `David Bombal` and `@davidbombal` reach the same saves |
+| Links rot and move | Access points (MARC 856) | Each save keeps the URL exactly as saved, for opening, and a canonical URL, for matching. Dead links are flagged, never dropped |
+| "Find that one thing" versus "what do I have on X" | Known-item versus subject search (Tagliacozzo & Kochen, 1970) | BM25 full-text search for known items. Facet counts and query relaxation for subject searches, in the discovery-layer pattern: one search box, refine afterwards |
 
-Full spec in [`pre-kompl-spec/`](./pre-kompl-spec/) — 15 files, ~3800 lines covering Work/Instance/Item model, authorities, dedup composites, never-drop principle, canonicalization-versioning, the works.
+Some library patterns don't scale down, and pre-KOMPL leaves them out on purpose. Grouping several Instances under one Work (the talk and the repo of the same project) isn't built, because personal saves rarely hold one creation in several forms. Controlled subject headings would need hand curation; folder names and full-text search cover that ground. Full page text and embeddings belong in a content store like KOMPL, not in a catalog.
 
-## Vendor-copied files
+**Further reading:** C. A. Cutter, *Rules for a Dictionary Catalog* (1876); S. R. Ranganathan, *Colon Classification* (1933); IFLA, *Functional Requirements for Bibliographic Records* (1998); Library of Congress, *BIBFRAME 2.0*; R. Tagliacozzo & M. Kochen, "Information-seeking behavior of catalog users" (1970); S. Robertson & S. Walker, "Some simple effective approximations to the 2-Poisson model for probabilistic weighted retrieval" (1994, the BM25 paper); E. Svenonius, *The Intellectual Foundation of Information Organization* (2000).
 
-* `src/parsers/twitter-parser.ts` — copied verbatim from `kompl/app/src/lib/twitter-parser.ts` on 2026-05-20. Includes `scrapeTweetTextDom` (used by Kompl's bookmarklet; pre-kompl doesn't ship the bookmarklet yet but mirrors the file 1:1).
+## Search from the command line
 
-Everything else is fresh pre-kompl code. There is no `metadata-peek.ts` in Kompl — `src/parsers/web-peek.ts` is original to pre-kompl.
+This is the same search the skill uses. It's handy for quick lookups and for scripts.
 
-## Canonicalization-rules version
+```bash
+pre-kompl search "agent memory"
+pre-kompl search "rag" --source github
+pre-kompl search "" --folder "Research"
+pre-kompl search "memory" --creator vectorize
+pre-kompl search "" --topic ai-memory --source github
+pre-kompl search "trading" --kind video --limit 50
+pre-kompl search "" --partial dead_link --status all
+pre-kompl search "agents" --json
+```
 
-`CANONICALIZATION_RULES_VERSION` in `src/config.ts`. Bumping requires a migration over Web Instance `native_id`s (which are the canonical URL — versioned coupling). DB refuses to ingest if the version on disk doesn't match the code's version.
+Search is one BM25-ranked full-text query across title, description, folder names, creator, URL and GitHub topics. Every word must match, so use keywords rather than sentences. Words are prefix-matched (`agent` also finds `agents` and `agentmemory`), English words are stemmed, and common stopwords are dropped. Punctuation counts as a word break, so `iana.org` searches for `iana` and `org`, and single characters are ignored. If nothing matches, the query is relaxed by dropping the last word, then by OR-ing the words.
 
-## Test fixtures
+| Flag | Meaning |
+| --- | --- |
+| `--source <list>` | `github`, `youtube`, `web`, `twitter` (comma-separated) |
+| `--kind <list>` | e.g. `video`, `github-repo`, `article`, `tweet`, `docs`, `paper` |
+| `--folder <prefix>` | Folder path starts with this, e.g. `Research` or `Research\|Agents` |
+| `--creator <list>` | Creator name prefix, e.g. a YouTube channel |
+| `--topic <list>` | GitHub topic prefix |
+| `--status <list>` | Ingest status, default `ok`; `--status all` includes partial rows |
+| `--partial <list>` | Partial reason, e.g. `dead_link`, `missing_api_key`; use with `--status all` |
+| `--limit <n>` | Number of results, default 20, max 100 |
+| `--json` | Full result envelope (hits, facet counts, relaxation, hidden partial count) |
 
-`test-fixtures/bookmarks-may-2026/` has:
-- `twitter-bookmarks.json` — real export from bestie (12 tweets, includes long Note Tweet)
-- `chrome-bookmarks.html` — synthetic browser export covering folders, sub-resource URLs, cross-source dedup cases
-- `reading-list.md` — notes file mixing markdown links and prose URLs, includes an intentional dupe with chrome
-- `screenshot.png` — binary, should be skipped
-- `notes-no-urls.txt` — text with no URLs, should be skipped
+An empty query needs at least one filter. The default output groups hits by source and ends with refinement suggestions drawn from the facet counts.
 
-Run `npx tsx --no-warnings src/cli.ts ingest test-fixtures/bookmarks-may-2026/` to see the full pipeline.
+### Other commands
+
+| Command | What it does |
+| --- | --- |
+| `pre-kompl status` | Counts by source, kind and status |
+| `pre-kompl partials [-n <count>]` | Incomplete rows, grouped by reason |
+| `pre-kompl errors [-n <count>]` | Inputs that failed to ingest |
+| `pre-kompl reclassify` | Re-applies logic-only rules (dead-link detection and similar) to existing rows; no network |
+| `pre-kompl rebuild-fts` | Rebuilds the search index; normally automatic |
+| `pre-kompl sql "<query>"` | Read-only SQL, see below |
+
+### Read-only SQL
+
+For questions `search` can't express (date ranges, exact URL lookups, custom counts):
+
+```bash
+pre-kompl sql "SELECT bookmark_folder_path, COUNT(*) c FROM items GROUP BY 1 ORDER BY c DESC LIMIT 5"
+pre-kompl sql "SELECT title, source FROM instances WHERE ingest_status = 'ok'" --limit 10 --json
+```
+
+The database is opened read-only and only `SELECT` / `WITH` statements are accepted. Output is pipe-separated with a header row, or an array of row objects with `--json`. `--limit <n>` appends a `LIMIT` when the query has none. No `sqlite3` binary is needed. The main tables are `instances` (one row per resource), `items` (one row per save; `save_date` is in milliseconds) and `authorities` (creators); the skill file lists their columns.
+
+### Re-ingest or reclassify
+
+Ingest skips resources already in the catalog, so it never re-fetches them.
+
+- When an update only changes logic (dead-link detection, status rules), run `pre-kompl reclassify`. It's fast, deterministic and costs no API calls.
+- When you need fresh data, for example after adding an API key, delete the catalog file and run `ingest` again.
+- If `CANONICALIZATION_RULES_VERSION` in `src/config.ts` changes, the old catalog refuses to open until you delete it and re-ingest.
+
+## Your data stays local
+
+The catalog is a single SQLite file on your machine. Network calls happen only during `ingest`: to the bookmarked web pages (to read titles and descriptions) and to the YouTube, GitHub and Firecrawl APIs if you set keys. `search`, `sql`, `status` and the other commands run offline. There is no telemetry. Your agent sees whatever the searches return, so the usual rules of the agent you use apply.
+
+## Development
+
+`npm run typecheck` is the correctness gate; there is no test runner. [AGENTS.md](./AGENTS.md) covers the data model and code conventions.
+
+## License
+
+[MIT](./LICENSE)

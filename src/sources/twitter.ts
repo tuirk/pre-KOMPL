@@ -39,7 +39,7 @@ export function ingestTwitter(
       continue;
     }
 
-    // RawBookmark for Item creation. save_date is the ingest time (we don't know when bestie bookmarked it).
+    // RawBookmark for Item creation. save_date is the ingest time (we don't know when the user bookmarked it).
     const bm: RawBookmark = {
       url,
       title: null,
@@ -153,7 +153,7 @@ export function ingestTwitterFromBookmarks(
 
     // New Instance from browser bookmark only. Use bm.title as the Instance title —
     // it's the best we have without a Twitter export. Mark partial with empty_text so
-    // bestie can see this Instance hasn't been enriched by a tweet export yet.
+    // the user can see this Instance hasn't been enriched by a tweet export yet.
     const title = bm.title ?? "";
     const workId = createWorkForInstance(ctx.db, title || "tweet", null);
 

@@ -1,5 +1,5 @@
 // URL canonicalization. v1 rules — bump CANONICALIZATION_RULES_VERSION in config.ts
-// before changing these. See /pre-kompl-spec/architecture/access-points.md.
+// before changing these.
 import type { Source } from "./types.js";
 
 // Tracking params stripped from web URLs.

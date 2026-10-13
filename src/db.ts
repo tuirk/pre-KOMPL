@@ -3,6 +3,7 @@
 // Schema is created idempotently on every open via CREATE TABLE IF NOT EXISTS.
 import Database from "better-sqlite3";
 import { CANONICALIZATION_RULES_VERSION } from "./config.js";
+import { stripBrowserRootFolder } from "./parsers/browser-bookmarks.js";
 
 export type DB = Database.Database;
 
@@ -61,7 +62,7 @@ CREATE TABLE IF NOT EXISTS items (
 
 -- Item composite uniqueness varies per source.
 -- We don't enforce via DB UNIQUE (would need per-source partial indexes).
--- The seen-set + buildItemKey() composite handles dedup at app layer.
+-- The seen-set + checkItemComposite() in sources/web.ts handle dedup at app layer.
 CREATE INDEX IF NOT EXISTS idx_items_instance ON items(instance_id);
 CREATE INDEX IF NOT EXISTS idx_items_save_date ON items(save_date);
 CREATE INDEX IF NOT EXISTS idx_items_folder ON items(bookmark_folder_path);
@@ -85,7 +86,7 @@ CREATE TABLE IF NOT EXISTS authorities (
 CREATE INDEX IF NOT EXISTS idx_authorities_type ON authorities(type);
 CREATE INDEX IF NOT EXISTS idx_authorities_preferred ON authorities(preferred);
 
--- Alias table for manual merges (bestie merges duplicates via UI in v1+; v0 unused).
+-- Alias table for manual merges (the user merges duplicates via UI in a later version; unused today).
 CREATE TABLE IF NOT EXISTS aliases (
   alias_text TEXT NOT NULL,
   authority_id TEXT NOT NULL,
@@ -120,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_errors_type ON ingestion_errors(error_type);
 -- is preserved.
 --
 -- Tokenizer: porter for stemming (memory/memories collapse), unicode61 for
--- non-ASCII (we have Norwegian and German titles in the corpus).
+-- non-ASCII titles (Norwegian, German, ...).
 -- Status/source columns are UNINDEXED — stored for filtering but excluded
 -- from the inverted index to keep it lean.
 CREATE VIRTUAL TABLE IF NOT EXISTS instances_fts USING fts5(
@@ -176,12 +177,45 @@ export function openDb(path: string, opts?: { readonly?: boolean }): DB {
   } else if (Number(existing.value) !== CANONICALIZATION_RULES_VERSION) {
     throw new Error(
       `Canonicalization rules version mismatch: DB has v${existing.value}, code is v${CANONICALIZATION_RULES_VERSION}. ` +
-        `A migration is required (see /pre-kompl-spec/architecture/access-points.md#canonicalization-rules-are-versioned).`
+        `Web Instance native_ids are canonical URLs, so they need recomputing: delete the catalog DB and re-run ingest.`
     );
   }
 
   migrateInstancesFtsIfNeeded(db);
+  if (!opts?.readonly) migrateFolderRootsIfNeeded(db);
   return db;
+}
+
+// One-time data migration: catalogs ingested before browser root containers
+// ("Bookmarks bar", "Other bookmarks", ...) were stripped at parse time still
+// carry them as the first folder segment. Strip in place, then rebuild FTS so
+// folder_paths stops matching "bar"/"menu".
+const FOLDER_ROOTS_MIGRATION_VERSION = 1;
+
+function migrateFolderRootsIfNeeded(db: DB): void {
+  const row = db
+    .prepare("SELECT value FROM meta WHERE key = 'folder_roots_version'")
+    .get() as { value: string } | undefined;
+  if (row && Number(row.value) >= FOLDER_ROOTS_MIGRATION_VERSION) return;
+
+  const rows = db
+    .prepare("SELECT id, bookmark_folder_path FROM items WHERE bookmark_folder_path != ''")
+    .all() as Array<{ id: string; bookmark_folder_path: string }>;
+  const update = db.prepare("UPDATE items SET bookmark_folder_path = ? WHERE id = ?");
+  let changed = 0;
+  db.transaction(() => {
+    for (const r of rows) {
+      const stripped = stripBrowserRootFolder(r.bookmark_folder_path);
+      if (stripped !== r.bookmark_folder_path) {
+        update.run(stripped, r.id);
+        changed++;
+      }
+    }
+    db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES ('folder_roots_version', ?)"
+    ).run(String(FOLDER_ROOTS_MIGRATION_VERSION));
+  })();
+  if (changed > 0) rebuildInstancesFts(db);
 }
 
 // FTS5 virtual tables can't ALTER — drop/recreate when the indexed column set changes.

@@ -1,5 +1,5 @@
 // Authority resolution — Layer 1 only: exact, normalized, alias-table.
-// No fuzzy, no embedding, no LLM. See /pre-kompl-spec/architecture/authorities.md.
+// No fuzzy, no embedding, no LLM.
 import type { DB } from "./db.js";
 import type { Source } from "./types.js";
 import { randomUUID } from "node:crypto";
@@ -49,7 +49,7 @@ export function findOrCreateCreatorAuthority(
   ).get(source, preferredName) as { id: string } | undefined;
   if (byPref) {
     // Different externalId, same preferred string — likely a real ambiguity (e.g., handle reuse).
-    // Conservative: create new authority with the new ID. Bestie can manually merge later.
+    // Conservative: create new authority with the new ID. The user can merge manually later.
     // Fall through to create.
   }
 

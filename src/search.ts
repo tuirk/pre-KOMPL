@@ -52,10 +52,17 @@ export interface SearchResult {
   relaxed_mode: RelaxedMode;
   items: SearchHit[];
   count: number;
+  // Partial rows that matched but were hidden by the default `ok`-only status
+  // filter. 0 when the caller set --status explicitly.
+  hidden_partial_count: number;
   facets: FacetCounts;
 }
 
-const FTS5_META = /['"*^():.,\-]/g;
+// Anything that isn't a letter, digit or combining mark becomes a space. That
+// neutralises every FTS5 operator (quotes, *, ^, +, :, parens, -, /, #, ...)
+// and splits compounds the way the unicode61 tokenizer split them at index
+// time: "iana.org" → "iana org", "gpt-4" → "gpt 4".
+const FTS5_NON_TOKEN = /[^\p{L}\p{N}\p{M}]+/gu;
 
 const STOPWORDS = new Set([
   "a", "an", "and", "or", "the", "in", "on", "at", "to", "for", "of",
@@ -72,8 +79,8 @@ const TOP_N_FACET_VALUES = 12;
 function tokenizeQuery(rawQuery: string): string[] {
   return rawQuery
     .toLowerCase()
+    .replace(FTS5_NON_TOKEN, " ")
     .split(/\s+/)
-    .map((t) => t.replace(FTS5_META, "").trim())
     .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
 }
 
@@ -241,6 +248,9 @@ export function searchCatalog(
     relaxed_mode,
     items: hits,
     count,
+    hidden_partial_count: filters.ingest_status === undefined
+      ? runFtsSearch(db, ftsQuery, filters, ["partial"], 0).count
+      : 0,
     facets,
   };
 }
@@ -296,7 +306,7 @@ function runFtsSearch(
       WHERE ${fullWhere}
     `).get(...allParams) as { c: number }
   ).c;
-  if (count === 0) return { hits: [], count: 0 };
+  if (count === 0 || limit === 0) return { hits: [], count };
 
   const distinct = needsDistinct ? "DISTINCT " : "";
   const rows = db.prepare(`
@@ -360,54 +370,31 @@ function runFilterOnlyBrowse(
   limit: number,
   rawQuery: string
 ): SearchResult {
-  const { sql: whereSql, params } = buildBrowseWhere(filters, statusFilter);
-  const folderPrefix = filters.folder_prefix;
-  const creatorPrefixes = filters.creator_prefix ?? [];
-  const topicPrefixes = filters.topic_prefix ?? [];
-
-  let extraJoins = "";
-  const extraWhere: string[] = [];
-  const extraParams: unknown[] = [];
-
-  if (creatorPrefixes.length > 0) {
-    extraJoins += "\n    JOIN authorities a ON a.id = i.creator_authority_id";
-    const clauses = creatorPrefixes.map(() => "lower(a.preferred) LIKE lower(?) || '%'");
-    extraWhere.push(`(${clauses.join(" OR ")})`);
-    extraParams.push(...creatorPrefixes);
-  }
-  if (topicPrefixes.length > 0) {
-    const clauses = topicPrefixes.map(
-      () =>
-        "EXISTS (SELECT 1 FROM json_each(json_extract(i.source_payload_json, '$.topics')) je WHERE lower(je.value) LIKE lower(?) || '%')"
-    );
-    extraWhere.push(`(${clauses.join(" OR ")})`);
-    extraParams.push(...topicPrefixes);
-  }
-
-  const fullWhere = extraWhere.length > 0
-    ? `${whereSql} AND ${extraWhere.join(" AND ")}`
-    : whereSql;
-  const allParams = [...params, ...extraParams];
+  // buildBrowseWhere already applies folder, creator and topic filters.
+  const { sql: fullWhere, params: allParams } = buildBrowseWhere(filters, statusFilter);
 
   const countSql = `
-    SELECT COUNT(DISTINCT i.id) AS c
+    SELECT COUNT(*) AS c
     FROM instances i
-    ${folderPrefix ? "JOIN items it ON it.instance_id = i.id" : ""}
-    ${extraJoins}
     WHERE ${fullWhere}
-    ${folderPrefix ? "AND it.bookmark_folder_path LIKE ?" : ""}
   `;
-  const countParams = folderPrefix ? [...allParams, folderPrefix + "%"] : allParams;
-  const count = (db.prepare(countSql).get(...countParams) as { c: number }).c;
+  const count = (db.prepare(countSql).get(...allParams) as { c: number }).c;
 
-  if (count === 0) {
+  // Same "what did the ok-only default hide" count as the FTS path. Recursing
+  // with an explicit status keeps the count SQL in one place.
+  const hidden_partial_count = filters.ingest_status === undefined
+    ? runFilterOnlyBrowse(db, { ...filters, ingest_status: ["partial"] }, ["partial"], 0, rawQuery).count
+    : 0;
+
+  if (count === 0 || limit === 0) {
     return {
       query_raw: rawQuery,
       query_executed: "",
       relaxed: false,
       relaxed_mode: "none",
       items: [],
-      count: 0,
+      count,
+      hidden_partial_count,
       facets: emptyFacets(),
     };
   }
@@ -424,17 +411,11 @@ function runFilterOnlyBrowse(
       (SELECT MAX(it2.save_date) FROM items it2 WHERE it2.instance_id = i.id) AS latest_save
     FROM instances i
     LEFT JOIN authorities a ON a.id = i.creator_authority_id
-    ${folderPrefix ? "JOIN items it ON it.instance_id = i.id" : ""}
-    ${extraJoins}
     WHERE ${fullWhere}
-    ${folderPrefix ? "AND it.bookmark_folder_path LIKE ?" : ""}
-    GROUP BY i.id
     ORDER BY latest_save DESC
     LIMIT ?
   `;
-  const hitsParams = folderPrefix
-    ? [...allParams, folderPrefix + "%", limit]
-    : [...allParams, limit];
+  const hitsParams = [...allParams, limit];
   const rows = db.prepare(hitsSql).all(...hitsParams) as Array<{
     instance_id: string; source: string; kind: string; url_canonical: string;
     title: string; description: string; ingest_status: string;
@@ -467,6 +448,7 @@ function runFilterOnlyBrowse(
     relaxed_mode: "none",
     items: hits,
     count,
+    hidden_partial_count,
     facets: computeBrowseFacets(db, filters, statusFilter),
   };
 }
@@ -492,6 +474,24 @@ function buildBrowseWhere(
   if (filters.partial_reason && filters.partial_reason.length > 0) {
     where.push(`i.partial_reason IN (${filters.partial_reason.map(() => "?").join(",")})`);
     params.push(...filters.partial_reason);
+  }
+  // Folder/creator/topic as EXISTS so every facet query honours them without extra joins.
+  if (filters.folder_prefix) {
+    where.push("EXISTS (SELECT 1 FROM items itf WHERE itf.instance_id = i.id AND itf.bookmark_folder_path LIKE ?)");
+    params.push(filters.folder_prefix + "%");
+  }
+  if (filters.creator_prefix && filters.creator_prefix.length > 0) {
+    const clauses = filters.creator_prefix.map(() => "lower(af.preferred) LIKE lower(?) || '%'");
+    where.push(`EXISTS (SELECT 1 FROM authorities af WHERE af.id = i.creator_authority_id AND (${clauses.join(" OR ")}))`);
+    params.push(...filters.creator_prefix);
+  }
+  if (filters.topic_prefix && filters.topic_prefix.length > 0) {
+    const clauses = filters.topic_prefix.map(
+      () =>
+        "EXISTS (SELECT 1 FROM json_each(json_extract(i.source_payload_json, '$.topics')) jt WHERE lower(jt.value) LIKE lower(?) || '%')"
+    );
+    where.push(`(${clauses.join(" OR ")})`);
+    params.push(...filters.topic_prefix);
   }
   return { sql: where.join(" AND "), params };
 }
@@ -704,6 +704,7 @@ function emptyResult(rawQuery: string, executedQuery: string): SearchResult {
     relaxed_mode: "none",
     items: [],
     count: 0,
+    hidden_partial_count: 0,
     facets: emptyFacets(),
   };
 }

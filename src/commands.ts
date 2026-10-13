@@ -1,4 +1,5 @@
 // CLI command handlers.
+import { basename } from "node:path";
 import { ingestFolder } from "./orchestrator.js";
 import { openDb, rebuildInstancesFts } from "./db.js";
 import { loadConfig } from "./config.js";
@@ -21,7 +22,7 @@ function printProgress(e: ProgressEvent): void {
       const detail = e.entries !== undefined && e.entries > 0
         ? `${e.type} (${e.entries} entries)`
         : `${e.type}${e.reason ? ` — ${e.reason}` : ""}`;
-      console.log(`  ${mark} ${e.path.split("/").pop()} → ${detail}`);
+      console.log(`  ${mark} ${basename(e.path)} → ${detail}`);
       break;
     }
     case "pipeline_start":
@@ -236,6 +237,17 @@ export interface SearchCmdOpts {
 }
 
 export function cmdSearch(query: string, opts: SearchCmdOpts = {}): void {
+  // An empty query with no filter would dump the whole catalog — refuse instead.
+  const hasFilter = [opts.source, opts.kind, opts.folder, opts.creator, opts.topic, opts.status, opts.partial]
+    .some((v) => v !== undefined && v !== "");
+  if (!query.trim() && !hasFilter) {
+    console.error(
+      "Error: give a search query or at least one filter " +
+        "(--source, --kind, --folder, --creator, --topic, --status, --partial)."
+    );
+    process.exit(1);
+  }
+
   const config = loadConfig();
   const db = openDb(config.dbPath);
 
@@ -261,8 +273,21 @@ export function cmdSearch(query: string, opts: SearchCmdOpts = {}): void {
     },
   };
 
-  const result = searchCatalog(db, query, searchOpts);
-  db.close();
+  let result: SearchResult;
+  try {
+    result = searchCatalog(db, query, searchOpts);
+  } catch (e: unknown) {
+    // The query sanitiser should make FTS5 syntax errors impossible; if one
+    // slips through, say so plainly instead of dumping a stack trace.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/fts5|syntax error/i.test(msg)) {
+      console.error(`Error: could not search for "${query}" (${msg}). Try plain words without punctuation.`);
+      process.exit(1);
+    }
+    throw e;
+  } finally {
+    db.close();
+  }
 
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
@@ -277,7 +302,10 @@ function printSearchResult(r: SearchResult): void {
     console.log(`No results for "${r.query_raw}".`);
     if (r.query_executed) {
       console.log(`Tried: ${r.query_executed} (and relaxations) — nothing matched.`);
+    } else if (r.query_raw.trim()) {
+      console.log(`Nothing searchable left after dropping punctuation, single letters and stopwords.`);
     }
+    printHiddenPartials(r);
     console.log(`Try: shorter query, different terms, or browse folders directly.`);
     return;
   }
@@ -326,6 +354,10 @@ function printSearchResult(r: SearchResult): void {
     console.log(`  → ${r.count - r.items.length} more matching. Use --limit to see more.`);
     console.log(``);
   }
+  if (r.hidden_partial_count > 0) {
+    printHiddenPartials(r);
+    console.log(``);
+  }
 
   // Facet panel — discovery-layer refinement affordance.
   const f = r.facets;
@@ -361,6 +393,14 @@ function printSearchResult(r: SearchResult): void {
       }
     }
   }
+}
+
+// Partial rows (e.g. GitHub/YouTube saved without an API key, URL-only tweets)
+// still carry the saved title + URL, so say how many the ok-only default hid.
+function printHiddenPartials(r: SearchResult): void {
+  const n = r.hidden_partial_count;
+  if (n === 0) return;
+  console.log(`  → ${n} partial match${n === 1 ? "" : "es"} hidden — use --status all to include ${n === 1 ? "it" : "them"}.`);
 }
 
 export function cmdRebuildFts(): void {

@@ -10,6 +10,33 @@ export function isNetscapeBookmarksFile(content: string): boolean {
   return head.includes("netscape-bookmark-file") || head.includes("<dl><p>");
 }
 
+// Root containers every browser wraps bookmarks in. They say where the bookmark
+// sat in the browser UI, not what it's about — left in, "Bookmarks bar|AI"
+// breaks `--folder "AI"` and FTS "bar"/"menu" match nearly everything.
+// Only stripped as the first path segment; a user folder deeper down that
+// happens to be called "Favorites" is kept. Matched case-insensitively.
+const BROWSER_ROOT_FOLDERS = new Set([
+  // Chrome / Brave
+  "bookmarks bar", "other bookmarks", "mobile bookmarks",
+  // Firefox
+  "bookmarks menu", "bookmarks toolbar",
+  // Edge
+  "favorites bar", "other favorites",
+  // Safari
+  "favorites", "bookmarksbar",
+  // Generic top-level wrapper some exporters add
+  "bookmarks",
+]);
+
+// "Bookmarks bar|AI|Agents" → "AI|Agents"; "Other bookmarks" → "".
+// Also used by db.ts to migrate rows ingested before this rule existed.
+export function stripBrowserRootFolder(folderPath: string): string {
+  if (!folderPath) return folderPath;
+  const segments = folderPath.split("|");
+  if (BROWSER_ROOT_FOLDERS.has(segments[0].trim().toLowerCase())) segments.shift();
+  return segments.join("|");
+}
+
 export function parseBookmarksHtml(content: string, sourceFile: string): RawBookmark[] {
   const $ = cheerioLoad(content, { xml: false });
   const bookmarks: RawBookmark[] = [];
@@ -63,7 +90,7 @@ function walk(
         title: title || null,
         save_date: addDate > 0 ? addDate * 1000 : Date.now(),
         save_date_is_inferred: addDate === 0,
-        bookmark_folder_path: folderStack.join("|"),
+        bookmark_folder_path: stripBrowserRootFolder(folderStack.join("|")),
         user_notes: null,
         source_export_file: sourceFile,
       });

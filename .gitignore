@@ -8,7 +8,7 @@ audit-out/
 *.db-shm
 *.db-wal
 
-# Spec & test fixtures — kept local for now, not yet in repo
+# Local design notes and personal test data
 pre-kompl-spec/
 test-fixtures/
 
@@ -28,5 +28,3 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Local agent handover — machine-specific
-CURSOR.md

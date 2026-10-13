@@ -1,5 +1,5 @@
 // Orchestrator: folder scan → file classification → URL classification → pipeline dispatch.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
 import type { FileClassification, RawBookmark, Source, IngestSummary } from "./types.js";
 import { IngestContext, type ProgressEvent } from "./context.js";
@@ -60,14 +60,21 @@ export function classifyFile(path: string): FileClassification {
   return { path, filename, type: "notes", entry_count: urls.length };
 }
 
+// Recurses into subfolders so an export tree can be pointed at as-is.
+// Dotfiles/dotdirs (.git, .DS_Store) and node_modules are skipped.
 export function scanFolder(folder: string): FileClassification[] {
-  let names: string[];
-  try { names = readdirSync(folder); } catch (e: any) {
+  let entries: Dirent[];
+  try { entries = readdirSync(folder, { withFileTypes: true }); } catch (e: any) {
     throw new Error(`Cannot read folder: ${folder} (${e.message})`);
   }
-  return names
-    .filter((n) => !n.startsWith(".")) // skip dotfiles
-    .map((n) => classifyFile(join(folder, n)));
+  const out: FileClassification[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+    const path = join(folder, entry.name);
+    if (entry.isDirectory()) out.push(...scanFolder(path));
+    else out.push(classifyFile(path));
+  }
+  return out;
 }
 
 export async function ingestFolder(
@@ -137,7 +144,7 @@ export async function ingestFolder(
       ctx.recordError({
         source: "github", raw_input: bm.url, source_export_file: bm.source_export_file,
         classification_attempt: "github_gist", error_type: "unsupported_url",
-        error_message: "Gists are out of scope for v0 (preserved as URL only)",
+        error_message: "Gists aren't supported yet (preserved as URL only)",
       });
     } else if (cls.kind === "shortener") {
       shorteners.push(bm);

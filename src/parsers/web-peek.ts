@@ -1,8 +1,7 @@
 // og-peek: cheap HEAD-ish GET that reads only the <head> of a page to extract OG/JSON-LD metadata.
 // 64 KiB body cap, 2s timeout, encoding detection (HTML meta charset → HTTP charset → UTF-8 default).
 //
-// NOT vendor-copied from Kompl — Kompl doesn't have this file. Original implementation per spec
-// at /pre-kompl-spec/sources/misc.md.
+// NOT vendor-copied from Kompl — Kompl doesn't have this file. Original to pre-kompl.
 
 import { load as cheerioLoad } from "cheerio";
 

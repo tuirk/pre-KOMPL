@@ -159,7 +159,7 @@ export async function ingestYouTube(ctx: IngestContext, bookmarks: RawBookmark[]
   }
 
   // Channel pages: resolve via local custom-URL match (free), then API forHandle/forUsername.
-  // The local match consolidates dupes when bestie also bookmarked videos by the same channel.
+  // The local match consolidates dupes when the user also bookmarked videos by the same channel.
   for (const g of newChannels) {
     await resolveChannelPageGroup(ctx, g, channelById, apiKey);
   }
